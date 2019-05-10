@@ -17,6 +17,8 @@
  * http://www.nxp.com/documents/user_manual/UM10204.pdf
  */
 
+#include <gpio.h>
+#include <zephyr.h>
 #include <errno.h>
 #include <kernel.h>
 #include <i2c.h>
@@ -48,6 +50,8 @@ static const u32_t delays_standard[] = {
 	[T_LOW] = NS_TO_SYS_CLOCK_HW_CYCLES(4700),
 	[T_HIGH] = NS_TO_SYS_CLOCK_HW_CYCLES(4000),
 };
+
+struct device *gpio0;
 
 int i2c_bitbang_configure(struct i2c_bitbang *context, u32_t dev_config)
 {
@@ -83,20 +87,30 @@ static void i2c_set_sda(struct i2c_bitbang *context, int state)
 
 static int i2c_get_sda(struct i2c_bitbang *context)
 {
-	return context->io->get_sda(context->io_context);
+	context->io->set_sda_dir(context->io_context, GPIO_DIR_IN);
+	int ret = context->io->get_sda(context->io_context);
+	context->io->set_sda_dir(context->io_context, GPIO_DIR_OUT);
+	return ret;
+}
+
+static int i2c_get_scl(struct i2c_bitbang *context)
+{
+	int ret = context->io->get_scl(context->io_context);
+	return ret;
 }
 
 static void i2c_delay(unsigned int cycles_to_wait)
 {
-	u32_t start = k_cycle_get_32();
+	// u32_t start = k_cycle_get_32();
 
-	/* Wait until the given number of cycles have passed */
-	while (k_cycle_get_32() - start < cycles_to_wait) {
-	}
+	// /* Wait until the given number of cycles have passed */
+	// while (k_cycle_get_32() - start < cycles_to_wait) {
+	// }
 }
 
 static void i2c_start(struct i2c_bitbang *context)
 {
+	i2c_set_scl(context, 1);
 	if (!i2c_get_sda(context)) {
 		/*
 		 * SDA is already low, so we need to do something to make it
@@ -119,19 +133,10 @@ static void i2c_repeated_start(struct i2c_bitbang *context)
 
 static void i2c_stop(struct i2c_bitbang *context)
 {
-	if (i2c_get_sda(context)) {
-		/*
-		 * SDA is already high, so we need to make it low so that
-		 * we can create a rising edge. This means we're effectively
-		 * doing a START.
-		 */
-		i2c_delay(context->delays[T_SU_STA]);
-		i2c_set_sda(context, 0);
-		i2c_delay(context->delays[T_HD_STA]);
-	}
-	i2c_delay(context->delays[T_SU_STP]);
+	i2c_delay(context->delays[T_LOW]);
+	i2c_set_scl(context, 1);
+	i2c_delay(context->delays[T_LOW]);
 	i2c_set_sda(context, 1);
-	i2c_delay(context->delays[T_BUF]); /* In case we start again too soon */
 }
 
 static void i2c_write_bit(struct i2c_bitbang *context, int bit)
@@ -144,18 +149,57 @@ static void i2c_write_bit(struct i2c_bitbang *context, int bit)
 	i2c_delay(context->delays[T_HIGH]);
 }
 
+static void i2c_check_clock_stretch(struct i2c_bitbang *context)
+{
+	i2c_set_scl(context, 0);
+	i2c_set_sda(context, 1);
+	i2c_delay(context->delays[T_LOW]);
+	i2c_set_scl(context, 1);
+	context->io->set_scl_dir(context->io_context, GPIO_DIR_IN);
+	while (!i2c_get_scl(context)) {
+	}
+	context->io->set_scl_dir(context->io_context, GPIO_DIR_OUT);
+}
+
 static bool i2c_read_bit(struct i2c_bitbang *context)
 {
 	bool bit;
 
-	i2c_set_scl(context, 0);
 	/* SDA hold time is zero, so no need for a delay here */
 	i2c_set_sda(context, 1); /* Stop driving low, so slave has control */
 	i2c_delay(context->delays[T_LOW]);
-	bit = i2c_get_sda(context);
 	i2c_set_scl(context, 1);
+	bit = i2c_get_sda(context);
 	i2c_delay(context->delays[T_HIGH]);
+	i2c_set_scl(context, 0);
 	return bit;
+}
+
+static bool i2c_stop_bit(struct i2c_bitbang *context)
+{
+	bool bit;
+
+	bit = i2c_get_sda(context);
+	i2c_set_scl(context, 0);
+	i2c_delay(context->delays[T_LOW]);
+	i2c_set_sda(context, 0);
+	return bit;
+}
+
+static bool i2c_write_addr(struct i2c_bitbang *context, u8_t byte)
+{
+	gpio_pin_write(gpio0, 15, 1);
+	u8_t mask = 1 << 7;
+
+	do {
+		i2c_write_bit(context, byte & mask);
+	} while (mask >>= 1);
+	/* write bit */
+	i2c_write_bit(context,1);
+
+	/* Return inverted ACK bit, i.e. 'true' for ACK, 'false' for NACK */
+	gpio_pin_write(gpio0, 15, 0);
+	return !i2c_stop_bit(context);
 }
 
 static bool i2c_write_byte(struct i2c_bitbang *context, u8_t byte)
@@ -167,12 +211,16 @@ static bool i2c_write_byte(struct i2c_bitbang *context, u8_t byte)
 	} while (mask >>= 1);
 
 	/* Return inverted ACK bit, i.e. 'true' for ACK, 'false' for NACK */
+	i2c_set_scl(context, 0);
 	return !i2c_read_bit(context);
 }
 
 static u8_t i2c_read_byte(struct i2c_bitbang *context)
 {
 	unsigned int byte = 1U;
+
+	/* Check the clock stretch on the slave device's SCL. */
+	i2c_check_clock_stretch(context);
 
 	do {
 		byte <<= 1;
@@ -196,6 +244,7 @@ int i2c_bitbang_transfer(struct i2c_bitbang *context,
 
 	/* We want an initial Start condition */
 	flags = I2C_MSG_RESTART;
+	// flags = msgs->flags;
 
 	/* Make sure we're in a good state so slave recognises the Start */
 	i2c_set_scl(context, 1);
@@ -204,7 +253,7 @@ int i2c_bitbang_transfer(struct i2c_bitbang *context,
 	do {
 		/* Stop flag from previous message? */
 		if (flags & I2C_MSG_STOP) {
-			i2c_stop(context);
+	//		i2c_stop(context);
 		}
 
 		/* Forget old flags except start flag */
@@ -225,7 +274,7 @@ int i2c_bitbang_transfer(struct i2c_bitbang *context,
 			unsigned int byte0 = slave_address << 1;
 
 			byte0 |= (flags & I2C_MSG_RW_MASK) == I2C_MSG_READ;
-			if (!i2c_write_byte(context, byte0)) {
+			if (!i2c_write_addr(context, byte0)) {
 				goto finish; /* No ACK received */
 			}
 			flags &= ~I2C_MSG_RESTART;
@@ -236,18 +285,42 @@ int i2c_bitbang_transfer(struct i2c_bitbang *context,
 		buf_end = buf + msgs->len;
 		if ((flags & I2C_MSG_RW_MASK) == I2C_MSG_READ) {
 			/* Read */
-			while (buf < buf_end) {
-				*buf++ = i2c_read_byte(context);
-				/* ACK the byte, except for the last one */
-				i2c_write_bit(context, buf == buf_end);
+			if (flags & I2C_MSG_RECV_LEN) {
+				unsigned int read_cnt = 0;
+				unsigned int first_byte_len = 0;
+
+				/* read first byte */
+				first_byte_len = i2c_read_byte(context);
+				*buf++ = first_byte_len;
+				while (read_cnt < first_byte_len) {
+					/* ACK the byte, except for the last one */
+					i2c_write_bit(context, 0);
+					*buf++ = i2c_read_byte(context);
+					read_cnt++;
+				}
+				/* Send NACK to slave device */
+				i2c_write_bit(context, 1);
+				i2c_set_scl(context, 0);
+				i2c_set_sda(context, 0);
+				i2c_stop(context);
+			} else {
+				while (buf < buf_end) {
+					*buf++ = i2c_read_byte(context);
+					/* ACK the byte, except for the last one */
+					i2c_write_bit(context, buf == buf_end);
+				}
 			}
 		} else {
 			/* Write */
+			flags |= I2C_MSG_RESTART;
 			while (buf < buf_end) {
 				if (!i2c_write_byte(context, *buf++)) {
 					goto finish; /* No ACK received */
 				}
 			}
+			i2c_set_scl(context, 0);
+			i2c_set_sda(context, 0);
+			i2c_stop(context);
 		}
 
 		/* Next message */
@@ -266,6 +339,9 @@ finish:
 void i2c_bitbang_init(struct i2c_bitbang *context,
 			const struct i2c_bitbang_io *io, void *io_context)
 {
+	gpio0 = device_get_binding(DT_GPIO_P0_DEV_NAME);
+	gpio_pin_configure(gpio0, 15, GPIO_DIR_OUT);
+	gpio_pin_write(gpio0, 15, 0);
 	context->io = io;
 	context->io_context = io_context;
 	i2c_bitbang_configure(context, I2C_SPEED_STANDARD << I2C_SPEED_SHIFT);

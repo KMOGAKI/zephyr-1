@@ -60,14 +60,40 @@ static int i2c_gpio_get_sda(void *io_context)
 	struct i2c_gpio_context *context = io_context;
 	u32_t state = 1U; /* Default high as that would be a NACK */
 
+	gpio_pin_configure(context->gpio, context->sda_pin, GPIO_DIR_IN);
 	gpio_pin_read(context->gpio, context->sda_pin, &state);
+	gpio_pin_configure(context->gpio, context->sda_pin, GPIO_DIR_OUT);
 	return state;
+}
+
+static int i2c_gpio_get_scl(void *io_context)
+{
+	struct i2c_gpio_context *context = io_context;
+	u32_t state = 1U; /* Default high as that would be a NACK */
+
+	gpio_pin_read(context->gpio, context->scl_pin, &state);
+	return state;
+}
+
+static void i2c_gpio_set_scl_dir(void *io_context, int direction)
+{
+	struct i2c_gpio_context *context = io_context;
+	gpio_pin_configure(context->gpio, context->scl_pin, direction);
+}
+
+static void i2c_gpio_set_sda_dir(void *io_context, int direction)
+{
+	struct i2c_gpio_context *context = io_context;
+	gpio_pin_configure(context->gpio, context->sda_pin, direction);
 }
 
 static const struct i2c_bitbang_io io_fns = {
 	.set_scl = &i2c_gpio_set_scl,
 	.set_sda = &i2c_gpio_set_sda,
+	.get_scl = &i2c_gpio_get_scl,
 	.get_sda = &i2c_gpio_get_sda,
+	.set_scl_dir = &i2c_gpio_set_scl_dir,
+	.set_sda_dir = &i2c_gpio_set_sda_dir,
 };
 
 static int i2c_gpio_configure(struct device *dev, u32_t dev_config)
@@ -102,6 +128,12 @@ static int i2c_gpio_init(struct device *dev)
 	}
 	context->sda_pin = config->sda_pin;
 	context->scl_pin = config->scl_pin;
+
+	gpio_pin_configure(context->gpio, context->sda_pin, GPIO_DIR_OUT);
+	gpio_pin_configure(context->gpio, context->scl_pin, GPIO_DIR_OUT);
+
+	gpio_pin_write(context->gpio, context->sda_pin, 1);
+	gpio_pin_write(context->gpio, context->scl_pin, 1);
 
 	i2c_bitbang_init(&context->bitbang, &io_fns, context);
 

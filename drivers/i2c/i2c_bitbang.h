@@ -16,6 +16,12 @@ struct i2c_bitbang_io {
 	void (*set_sda)(void *io_context, int state);
 	/* Return the state of the SDA line (zero/non-zero value) */
 	int (*get_sda)(void *io_context);
+	/* Return the state of the SCL line (zero/non-zero value) */
+	int (*get_scl)(void *io_context);
+	/* Set the direction of the SCL line */
+	void (*set_sda_dir)(void *io_context, int direction);
+	/* Set the direction of the SDA line */
+	void (*set_scl_dir)(void *io_context, int direction);
 };
 
 /**
