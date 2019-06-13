@@ -15,6 +15,7 @@
 #include <logging/log_instance.h>
 #include <logging/log.h>
 #include <misc/util.h>
+#include <openthread/instance.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,8 @@ extern "C" {
 #ifndef CONFIG_SHELL_PRINTF_BUFF_SIZE
 #define CONFIG_SHELL_PRINTF_BUFF_SIZE 0
 #endif
+
+#define OT_DEBUG
 
 #define SHELL_CMD_ROOT_LVL		(0u)
 
@@ -530,6 +533,10 @@ extern void shell_print_stream(const void *user_ctx, const char *data,
  */
 int shell_init(const struct shell *shell, const void *transport_config,
 	       bool use_colors, bool log_backend, u32_t init_log_level);
+
+#ifdef OT_DEBUG
+int shell_cmds_init(otInstance *aInstance);
+#endif
 
 /**
  * @brief Uninitializes the transport layer and the internal shell state.

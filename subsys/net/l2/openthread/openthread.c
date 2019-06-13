@@ -343,6 +343,8 @@ static int openthread_init(struct net_if *iface)
 
 	__ASSERT(ot_context->instance, "OT instance is NULL");
 
+	shell_cmds_init(ot_context->instance);
+
 #if defined(CONFIG_OPENTHREAD_SHELL)
 	platformShellInit(ot_context->instance);
 #endif
